@@ -12,6 +12,7 @@ import playerEn from '@shared/i18n/en/renderer/player.yaml'
 import rankedEn from '@shared/i18n/en/renderer/ranked.yaml'
 import settingsEn from '@shared/i18n/en/renderer/settings.yaml'
 import shellEn from '@shared/i18n/en/renderer/shell.yaml'
+import teamBpEn from '@shared/i18n/en/renderer/team-bp.yaml'
 import toolkitEn from '@shared/i18n/en/renderer/toolkit.yaml'
 import commonZhCN from '@shared/i18n/zh-CN/common.yaml'
 import automationZhCN from '@shared/i18n/zh-CN/renderer/automation.yaml'
@@ -27,6 +28,7 @@ import playerZhCN from '@shared/i18n/zh-CN/renderer/player.yaml'
 import rankedZhCN from '@shared/i18n/zh-CN/renderer/ranked.yaml'
 import settingsZhCN from '@shared/i18n/zh-CN/renderer/settings.yaml'
 import shellZhCN from '@shared/i18n/zh-CN/renderer/shell.yaml'
+import teamBpZhCN from '@shared/i18n/zh-CN/renderer/team-bp.yaml'
 import toolkitZhCN from '@shared/i18n/zh-CN/renderer/toolkit.yaml'
 import i18next from 'i18next'
 
@@ -60,7 +62,8 @@ const rendererEn = mergeRendererResources(
   auxWindowEn,
   opggEn,
   cdTimerEn,
-  notificationsEn
+  notificationsEn,
+  teamBpEn
 )
 
 const rendererZhCN = mergeRendererResources(
@@ -77,7 +80,8 @@ const rendererZhCN = mergeRendererResources(
   auxWindowZhCN,
   opggZhCN,
   cdTimerZhCN,
-  notificationsZhCN
+  notificationsZhCN,
+  teamBpZhCN
 )
 
 i18next.init({

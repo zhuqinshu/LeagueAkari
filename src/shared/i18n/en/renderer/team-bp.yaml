@@ -1,0 +1,75 @@
+teamBp:
+  title: Team BP
+  latestPatch: Latest
+  fixedTier: Emerald+
+  dataDescription: '{{source}} · {{region}} · {{patch}} · {{tier}} · Updated {{time}}'
+  unknownUpdateTime: Unknown time
+  dataStatus:
+    idle: Waiting for champion data
+    loading: Loading champion data
+    ready: Champion data is ready
+    failed: Champion data failed to load
+  side:
+    blue: Blue side · First pick
+    red: Red side · Counter pick
+    unknown: Side not determined
+  phase:
+    unavailable: Waiting for lobby
+    lobby: Team lobby preparation
+    champ-select: Champion select
+  action:
+    pick: Ally pick
+    ban: Ally ban
+    none: Waiting for the next action
+    enemyTurn: 'Enemy {{action}}'
+  actions:
+    refresh: Refresh
+    aiAnalyze: AI Analysis
+  board:
+    allyTeam: Ally Team
+    enemyTeam: Enemy Team
+    unknownPlayer: Waiting for player
+    waitingForPick: No champion selected
+    bans: Bans
+    currentAction: Current Action
+    timeLeft: Time Left
+  recommendations:
+    title: Data Recommendations
+    bans: Recommended Bans
+    empty: Legal candidates will appear after data is ready
+    confidence:
+      high: High confidence
+      medium: Medium confidence
+      low: Low confidence
+    reasons:
+      meta-strong: Strong in the current meta
+      player-familiar: Familiar pick
+      safe-blind-pick: Safer blind pick
+      counter-risk: Known counter relationship
+      fills-open-position: Fills an open position
+      flexible-pick: Flexible pick
+  ai:
+    title: AI Strategy
+    primaryPick: Primary
+    alternatives: Alternatives
+    bans: Bans
+    placeholder: Add a DeepSeek API Key to generate multi-step BP strategy
+    status:
+      disabled: Key not configured
+      idle: Ready
+      loading: Analyzing
+      ready: Complete
+      failed: Failed
+  settings:
+    title: Team BP Settings
+    fixedDataScope: Data scope is fixed to OP.GG · KR · Emerald+
+    fixedAiModel: Model is fixed to DeepSeek V4 Flash with thinking disabled for lower BP latency
+    aiSection: DeepSeek API Key
+    aiApiKey: API Key
+    aiApiKeyConfigured: Saved securely; leave blank to keep it
+    aiApiKeyRequired: Enter your DeepSeek API Key
+    clearApiKey: Clear
+    save: Save
+    cancel: Cancel
+  errors:
+    data: 'Failed to load champion data: {{reason}}'

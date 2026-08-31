@@ -33,6 +33,7 @@ import { SettingFactoryMain } from '@main/shards/setting-factory'
 import { SgpMain } from '@main/shards/sgp'
 import { StatisticsMain } from '@main/shards/statistics'
 import { StorageMain } from '@main/shards/storage'
+import { TeamBpMain } from '@main/shards/team-bp'
 import { TrayMain } from '@main/shards/tray'
 import { WindowManagerMain } from '@main/shards/window-manager'
 import { DEEP_LINK_PROTOCOL } from '@main/utils/deep-link'
@@ -340,6 +341,7 @@ export function bootstrap() {
     manager.use(ChampionDataMain)
     manager.use(InGameSendMain)
     manager.use(OngoingGameMain)
+    manager.use(TeamBpMain)
     manager.use(RespawnTimerMain)
     manager.use(SavedPlayerMain)
     manager.use(SgpMain)

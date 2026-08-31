@@ -184,6 +184,7 @@ navigation:
     menu:
       match-history: Match History
       ongoing-game: Ongoing Game
+      team-bp: Team BP
       automation: Automation
       toolkit: Toolkit
       test: Test

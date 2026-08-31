@@ -1,0 +1,75 @@
+teamBp:
+  title: 五黑 BP
+  latestPatch: 最新版本
+  fixedTier: 翡翠及以上
+  dataDescription: '{{source}} · {{region}} · {{patch}} · {{tier}} · 更新于 {{time}}'
+  unknownUpdateTime: 未知时间
+  dataStatus:
+    idle: 等待加载英雄数据
+    loading: 正在加载英雄数据
+    ready: 英雄数据已就绪
+    failed: 英雄数据加载失败
+  side:
+    blue: 蓝方先手
+    red: 红方后手
+    unknown: 未确定先后手
+  phase:
+    unavailable: 等待进入房间
+    lobby: 五黑房间准备
+    champ-select: 英雄选择
+  action:
+    pick: 我方选择英雄
+    ban: 我方禁用英雄
+    none: 等待下一步操作
+    enemyTurn: 敌方{{action}}
+  actions:
+    refresh: 刷新数据
+    aiAnalyze: AI 战术分析
+  board:
+    allyTeam: 我方阵容
+    enemyTeam: 敌方阵容
+    unknownPlayer: 等待成员
+    waitingForPick: 尚未选择
+    bans: 禁用
+    currentAction: 当前行动
+    timeLeft: 剩余时间
+  recommendations:
+    title: 数据推荐
+    bans: 建议禁用
+    empty: 数据就绪后将显示合法候选
+    confidence:
+      high: 高置信
+      medium: 中置信
+      low: 低置信
+    reasons:
+      meta-strong: 版本强势
+      player-familiar: 玩家熟练
+      safe-blind-pick: 适合盲选
+      counter-risk: 存在克制关系
+      fills-open-position: 补齐空缺位置
+      flexible-pick: 可摇摆
+  ai:
+    title: AI 战术建议
+    primaryPick: 首选
+    alternatives: 备选
+    bans: 禁用
+    placeholder: 填写 DeepSeek API Key 后，可生成多步 BP 战术建议
+    status:
+      disabled: 未配置 Key
+      idle: 待分析
+      loading: 分析中
+      ready: 已完成
+      failed: 分析失败
+  settings:
+    title: 五黑 BP 设置
+    fixedDataScope: 数据口径固定为 OP.GG · KR · 翡翠及以上
+    fixedAiModel: 模型固定为 DeepSeek V4 Flash，使用非思考模式以降低 BP 延迟
+    aiSection: DeepSeek API Key
+    aiApiKey: API Key
+    aiApiKeyConfigured: 已安全保存，留空则保持不变
+    aiApiKeyRequired: 请输入 DeepSeek API Key
+    clearApiKey: 清除
+    save: 保存
+    cancel: 取消
+  errors:
+    data: 英雄数据加载失败：{{reason}}

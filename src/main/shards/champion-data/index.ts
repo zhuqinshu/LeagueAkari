@@ -111,12 +111,18 @@ export class ChampionDataMain implements IAkariShardInitDispose {
     this._ipcHandlers.dispose()
   }
 
-  loadOverview(query: Parameters<ChampionDataServiceController['loadOverview']>[0]) {
-    return this._service.loadOverview(query)
+  loadOverview(
+    query: Parameters<ChampionDataServiceController['loadOverview']>[0],
+    options?: Parameters<ChampionDataServiceController['loadOverview']>[1]
+  ) {
+    return this._service.loadOverview(query, options)
   }
 
-  loadPatches(query: Parameters<ChampionDataServiceController['loadPatches']>[0]) {
-    return this._service.loadPatches(query)
+  loadPatches(
+    query: Parameters<ChampionDataServiceController['loadPatches']>[0],
+    options?: Parameters<ChampionDataServiceController['loadPatches']>[1]
+  ) {
+    return this._service.loadPatches(query, options)
   }
 
   loadDetails(

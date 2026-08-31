@@ -3,6 +3,7 @@ import { createRouter, createWebHashHistory } from 'vue-router'
 import Automation from '@main-window/views/automation/Automation.vue'
 import OngoingGame from '@main-window/views/ongoing-game/OngoingGame.vue'
 import PlayerTabs from '@main-window/views/player-tabs/PlayerTabs.vue'
+import TeamBp from '@main-window/views/team-bp/TeamBp.vue'
 import Test from '@main-window/views/test/Test.vue'
 import Toolkit from '@main-window/views/toolkit/Toolkit.vue'
 
@@ -24,6 +25,11 @@ const router = createRouter({
       name: 'ongoing-game',
       path: '/ongoing-game',
       component: OngoingGame
+    },
+    {
+      name: 'team-bp',
+      path: '/team-bp',
+      component: TeamBp
     },
     {
       name: 'toolkit',

@@ -54,7 +54,7 @@ import { useAppCommonStore } from '@renderer-shared/shards/app-common/store'
 import { useLeagueClientStore } from '@renderer-shared/shards/league-client/store'
 import { useOngoingGameStore } from '@renderer-shared/shards/ongoing-game/store'
 import { WindowManagerRenderer } from '@renderer-shared/shards/window-manager'
-import { ToolFilled as ToolFilledIcon } from '@vicons/antd'
+import { RobotFilled as RobotFilledIcon, ToolFilled as ToolFilledIcon } from '@vicons/antd'
 import {
   AnimalRabbit28Filled as AnimalRabbit28FilledIcon,
   Flash20Filled as Flash20FilledIcon,
@@ -182,6 +182,11 @@ const menu = computed(() => {
       name: t('navigation.sidebar.menu.ongoing-game'),
       inProgress: shouldShowOngoingGameBadge.value,
       isDisabled: !lcs.isConnected
+    },
+    {
+      key: 'team-bp',
+      icon: renderIcon(RobotFilledIcon),
+      name: t('navigation.sidebar.menu.team-bp')
     },
     {
       key: 'automation',

@@ -183,6 +183,7 @@ navigation:
     menu:
       match-history: 战绩
       ongoing-game: 对局
+      team-bp: 五黑 BP
       automation: 自动操作
       toolkit: 工具集
       test: 测试
