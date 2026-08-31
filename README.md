@@ -28,6 +28,7 @@ A League of Legends client toolkit based on the LCU API.
 
 - 新增五黑团队 BP 栏目，结合位置、英雄熟练度、实时选禁和先后手提供 Pick/Ban 建议。
 - 固定使用 OP.GG 韩服翡翠及以上数据，并支持 DeepSeek V4 Flash 战术分析；用户只需填写 API Key。
+- 推荐会模拟剩余位置并以最终五人阵容评分，详细对位胜率、样本量和协同证据会直接影响排序。
 
 [查看完整更新历史](docs/releases/release-notes.md)
 

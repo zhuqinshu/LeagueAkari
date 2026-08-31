@@ -57,7 +57,7 @@ export class TeamBpRecommendationController {
   }
 
   recompute() {
-    const { ongoingGame, state } = this._context
+    const { leagueClient, ongoingGame, state } = this._context
     const session = this._buildSession()
     state.setSession(session)
     this._revision++
@@ -68,15 +68,35 @@ export class TeamBpRecommendationController {
       return
     }
 
-    state.setRecommendations(
+    const calculateRecommendations = () =>
       scoreTeamBpRecommendations({
         session,
         overviews: this._dataLoader.overviews,
         playerAnalysis: ongoingGame.state.analysis?.players ?? {},
-        championMastery: ongoingGame.state.championMastery
+        championMastery: ongoingGame.state.championMastery,
+        details: this._dataLoader.details,
+        championRoles: Object.fromEntries(
+          Object.values(leagueClient.data.gameData.champions).map((champion) => [
+            champion.id,
+            champion.roles
+          ])
+        )
       })
-    )
-    this._scheduleAiRecommendation()
+    const recommendations = calculateRecommendations()
+    state.setRecommendations(recommendations)
+    const revision = this._revision
+    void this._dataLoader
+      .loadCandidateDetails(recommendations.picks)
+      .then((changed) => {
+        if (revision !== this._revision) return
+        if (changed) state.setRecommendations(calculateRecommendations())
+        this._scheduleAiRecommendation()
+      })
+      .catch((error) => {
+        if (revision !== this._revision || axios.isCancel(error)) return
+        this._context.logger.warn('Team BP detail loading failed', formatError(error))
+        this._scheduleAiRecommendation()
+      })
   }
 
   async requestAiRecommendation() {
@@ -115,7 +135,7 @@ export class TeamBpRecommendationController {
     if (
       !state.hasAiApiKey ||
       !state.session.isAllyTurn ||
-      state.recommendations.picks.length === 0
+      state.recommendations.pairs.length === 0
     ) {
       return
     }

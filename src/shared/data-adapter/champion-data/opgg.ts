@@ -168,7 +168,8 @@ function buildOptions(items: OpggBuildPickItem[]) {
 function matchup(counter: OpggChampionCounter) {
   return {
     championId: counter.champion_id,
-    relationship: 'unknown' as const,
+    // OP.GG counters 列表表示当前英雄的劣势对手，胜率为当前英雄在该对局样本中的胜率。
+    relationship: 'unfavorable' as const,
     performance: recommendationPerformance(counter)
   }
 }
@@ -180,7 +181,18 @@ export function adaptOpggChampionOverview(
   return {
     metadata: metadata(response.meta.version, response.meta.cached_at, options),
     sections: {
-      champions: response.data.map((item) => overviewItem(item, options.position))
+      champions: response.data.flatMap((item) => {
+        // 分位置请求只能保留该位置的真实样本，不能用全局均值伪装成位置数据。
+        if (
+          options.position &&
+          options.position !== 'all' &&
+          options.position !== 'none' &&
+          !findPosition(item.positions, options.position)
+        ) {
+          return []
+        }
+        return [overviewItem(item, options.position)]
+      })
     }
   }
 }

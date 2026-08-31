@@ -21,11 +21,12 @@ describe('TeamBpAiRecommendationExecutor', () => {
           {
             message: {
               content: JSON.stringify({
-                primaryPickChampionId: 1,
-                alternativePickChampionIds: [2],
+                primaryPairChampionIds: [1, 2],
+                alternativePairChampionIds: [],
                 banChampionIds: [3],
-                summary: '优先选择一号英雄',
-                reasons: ['合法候选中的最高优先级']
+                summary: '优先选择一号和二号英雄',
+                reasons: ['合法候选中的最高优先级'],
+                nextPlan: '后续保留中路反制位'
               })
             }
           }
@@ -59,7 +60,32 @@ describe('TeamBpAiRecommendationExecutor', () => {
           breakdown: { meta: 80, familiarity: 70, matchup: 60, draftValue: 50 }
         }
       ],
-      bans: [{ championId: 3, score: 85, reasons: ['counter-risk'] }]
+      bans: [{ championId: 3, score: 85, reasons: ['counter-risk'] }],
+      pairs: [
+        {
+          championIds: [1, 2],
+          assignments: [
+            { championId: 1, position: 'top', playerPuuid: null },
+            { championId: 2, position: 'jungle', playerPuuid: null }
+          ],
+          projectedFinalLineup: [
+            { championId: 1, position: 'top' },
+            { championId: 2, position: 'jungle' }
+          ],
+          score: 85,
+          confidence: 'medium',
+          matchupEvidence: [],
+          synergyEvidence: [],
+          compositionImpact: { adds: ['frontline'], missingAfterPick: [], risks: [] },
+          breakdown: {
+            individual: 85,
+            matchup: 65,
+            synergy: 50,
+            composition: 60,
+            draftValue: 55
+          }
+        }
+      ]
     }
 
     const result = await new TeamBpAiRecommendationExecutor(context, credential).execute(
@@ -67,7 +93,7 @@ describe('TeamBpAiRecommendationExecutor', () => {
       recommendations
     )
 
-    expect(result.primaryPickChampionId).toBe(1)
+    expect(result.primaryPairChampionIds).toEqual([1, 2])
     expect(post).toHaveBeenCalledWith(
       TEAM_BP_AI_ENDPOINT,
       expect.objectContaining({

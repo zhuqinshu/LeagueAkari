@@ -35,6 +35,9 @@ teamBp:
     timeLeft: Time Left
   recommendations:
     title: Data Recommendations
+    matchupEvidence: 'Matchup evidence: {{count}}'
+    synergyEvidence: 'Synergy evidence: {{count}}'
+    missing: 'Missing: {{value}}'
     bans: Recommended Bans
     empty: Legal candidates will appear after data is ready
     confidence:
@@ -50,9 +53,10 @@ teamBp:
       flexible-pick: Flexible pick
   ai:
     title: AI Strategy
-    primaryPick: Primary
+    primaryPair: Primary Pair
     alternatives: Alternatives
     bans: Bans
+    nextPlan: Next Plan
     placeholder: Add a DeepSeek API Key to generate multi-step BP strategy
     status:
       disabled: Key not configured

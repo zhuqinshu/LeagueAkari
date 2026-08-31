@@ -96,38 +96,60 @@
           </div>
           <div class="flex flex-col gap-1.5 p-2">
             <div
-              v-for="recommendation in store.recommendations.picks.slice(0, 8)"
-              :key="recommendation.championId"
+              v-for="pair in store.recommendations.pairs.slice(0, 6)"
+              :key="pair.championIds.join('-')"
               class="flex items-center gap-2 rounded bg-black/3 px-2 py-1.5 dark:bg-white/5"
             >
-              <ChampionIcon class="size-9 rounded" :champion-id="recommendation.championId" />
+              <div class="flex -space-x-1">
+                <ChampionIcon
+                  v-for="championId in pair.championIds"
+                  :key="championId"
+                  class="size-9 rounded border border-black/10 dark:border-white/10"
+                  :champion-id="championId"
+                />
+              </div>
               <div class="min-w-0 flex-1">
                 <div class="flex items-center gap-1.5">
-                  <span class="truncate text-sm font-medium">{{
-                    resources.champions.name(recommendation.championId)
-                  }}</span>
-                  <NTag size="tiny" :bordered="false">{{
-                    positionLabel(recommendation.position)
-                  }}</NTag>
+                  <span class="truncate text-sm font-medium">
+                    {{ pair.championIds.map((id) => resources.champions.name(id)).join(' + ') }}
+                  </span>
+                  <NTag
+                    v-for="assignment in pair.assignments"
+                    :key="assignment.championId"
+                    size="tiny"
+                    :bordered="false"
+                    >{{ positionLabel(assignment.position) }}</NTag
+                  >
                 </div>
                 <div class="truncate text-xs text-black/50 dark:text-white/50">
-                  <template v-if="recommendation.playerPuuid">
-                    {{ playerLabel(recommendation.playerPuuid) }} ·
-                  </template>
-                  {{ recommendation.reasons.slice(0, 3).map(reasonLabel).join(' · ') }}
+                  {{
+                    t('teamBp.recommendations.matchupEvidence', {
+                      count: pair.matchupEvidence.length
+                    })
+                  }}
+                  ·
+                  {{
+                    t('teamBp.recommendations.synergyEvidence', {
+                      count: pair.synergyEvidence.length
+                    })
+                  }}
+                  ·
+                  {{
+                    t('teamBp.recommendations.missing', {
+                      value: pair.compositionImpact.missingAfterPick.join(', ') || t('common:na')
+                    })
+                  }}
                 </div>
               </div>
               <div class="text-right">
-                <div class="text-base font-bold text-(--color-akari)">
-                  {{ recommendation.score }}
-                </div>
+                <div class="text-base font-bold text-(--color-akari)">{{ pair.score }}</div>
                 <div class="text-xs text-black/40 dark:text-white/40">
-                  {{ confidenceLabel(recommendation.confidence) }}
+                  {{ confidenceLabel(pair.confidence) }}
                 </div>
               </div>
             </div>
             <NEmpty
-              v-if="store.recommendations.picks.length === 0"
+              v-if="store.recommendations.pairs.length === 0"
               size="small"
               :description="t('teamBp.recommendations.empty')"
               class="py-8"
@@ -147,22 +169,29 @@
             <div class="text-sm font-medium">{{ store.aiRecommendation.summary }}</div>
             <div class="mt-2 flex flex-wrap items-center gap-1.5">
               <span class="text-xs text-black/50 dark:text-white/50">{{
-                t('teamBp.ai.primaryPick')
+                t('teamBp.ai.primaryPair')
               }}</span>
               <ChampionIcon
-                v-if="store.aiRecommendation.primaryPickChampionId"
+                v-for="championId in store.aiRecommendation.primaryPairChampionIds"
+                :key="`ai-primary-${championId}`"
                 class="size-7 rounded"
-                :champion-id="store.aiRecommendation.primaryPickChampionId"
+                :champion-id="championId"
               />
               <span class="ml-2 text-xs text-black/50 dark:text-white/50">{{
                 t('teamBp.ai.alternatives')
               }}</span>
-              <ChampionIcon
-                v-for="championId in store.aiRecommendation.alternativePickChampionIds"
-                :key="`ai-pick-${championId}`"
-                class="size-7 rounded"
-                :champion-id="championId"
-              />
+              <div
+                v-for="pair in store.aiRecommendation.alternativePairChampionIds"
+                :key="`ai-pair-${pair.join('-')}`"
+                class="flex -space-x-1"
+              >
+                <ChampionIcon
+                  v-for="championId in pair"
+                  :key="championId"
+                  class="size-7 rounded"
+                  :champion-id="championId"
+                />
+              </div>
               <span class="ml-2 text-xs text-black/50 dark:text-white/50">{{
                 t('teamBp.ai.bans')
               }}</span>
@@ -176,6 +205,9 @@
             <div class="mt-2 flex flex-col gap-1 text-xs text-black/60 dark:text-white/60">
               <div v-for="reason in store.aiRecommendation.reasons" :key="reason">
                 • {{ reason }}
+              </div>
+              <div class="mt-1 font-medium">
+                {{ t('teamBp.ai.nextPlan') }}：{{ store.aiRecommendation.nextPlan }}
               </div>
             </div>
           </div>
@@ -328,9 +360,6 @@ const reasonLabel = (reason: TeamBpRecommendationReason) =>
   t(`teamBp.recommendations.reasons.${reason}`)
 const confidenceLabel = (confidence: 'high' | 'medium' | 'low') =>
   t(`teamBp.recommendations.confidence.${confidence}`)
-const playerLabel = (puuid: string) =>
-  store.session.allies.find((member) => member.puuid === puuid)?.displayName ||
-  t('teamBp.board.unknownPlayer')
 const refresh = () => void teamBp.refreshChampionData()
 const requestAi = () => void teamBp.requestAiRecommendation()
 

@@ -35,6 +35,9 @@ teamBp:
     timeLeft: 剩余时间
   recommendations:
     title: 数据推荐
+    matchupEvidence: 对位证据 {{count}}
+    synergyEvidence: 协同证据 {{count}}
+    missing: 缺口 {{value}}
     bans: 建议禁用
     empty: 数据就绪后将显示合法候选
     confidence:
@@ -50,9 +53,10 @@ teamBp:
       flexible-pick: 可摇摆
   ai:
     title: AI 战术建议
-    primaryPick: 首选
+    primaryPair: 首选组合
     alternatives: 备选
     bans: 禁用
+    nextPlan: 后续计划
     placeholder: 填写 DeepSeek API Key 后，可生成多步 BP 战术建议
     status:
       disabled: 未配置 Key

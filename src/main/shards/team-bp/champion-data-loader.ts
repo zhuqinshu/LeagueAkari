@@ -1,4 +1,5 @@
-import type { ChampionOverviewItem } from '@shared/data-adapter/champion-data'
+import type { ChampionDataDetails, ChampionOverviewItem } from '@shared/data-adapter/champion-data'
+import { createTeamBpDetailKey } from '@shared/data-adapter/team-bp/scoring'
 import {
   TEAM_BP_DATA_REGION,
   TEAM_BP_DATA_SOURCE,
@@ -18,8 +19,10 @@ export class TeamBpChampionDataLoader {
     bottom: [],
     utility: []
   }
+  details: Record<string, ChampionDataDetails> = {}
 
   private _abortController: AbortController | null = null
+  private _detailsAbortController: AbortController | null = null
   private _generation = 0
 
   constructor(private readonly _context: TeamBpMainContext) {}
@@ -27,6 +30,8 @@ export class TeamBpChampionDataLoader {
   async refresh() {
     const generation = ++this._generation
     this._abortController?.abort()
+    this._detailsAbortController?.abort()
+    this.details = {}
     this._abortController = new AbortController()
     const { signal } = this._abortController
     const { championData, logger, state } = this._context
@@ -90,8 +95,52 @@ export class TeamBpChampionDataLoader {
     }
   }
 
+  async loadCandidateDetails(
+    picks: Array<{ championId: number; position: TeamBpPosition }>
+  ): Promise<boolean> {
+    const metadata = this._context.state.dataMetadata
+    const patch = metadata?.patch
+    if (!patch) return false
+    const candidates = picks
+      .slice(0, 12)
+      .filter((pick) => !this.details[createTeamBpDetailKey(pick.championId, pick.position)])
+    if (!candidates.length) return false
+
+    this._detailsAbortController?.abort()
+    this._detailsAbortController = new AbortController()
+    const { signal } = this._detailsAbortController
+    const results = await Promise.allSettled(
+      candidates.map(async (pick) => {
+        const result = await this._context.championData.loadDetails(
+          {
+            source: TEAM_BP_DATA_SOURCE,
+            mode: 'ranked',
+            region: TEAM_BP_DATA_REGION,
+            tier: TEAM_BP_DATA_TIER,
+            patch,
+            position: pick.position
+          },
+          pick.championId,
+          { signal }
+        )
+        if (result.status === 'unavailable') return null
+        return [createTeamBpDetailKey(pick.championId, pick.position), result.data] as const
+      })
+    )
+    if (signal.aborted) return false
+
+    let changed = false
+    for (const result of results) {
+      if (result.status !== 'fulfilled' || !result.value) continue
+      this.details[result.value[0]] = result.value[1]
+      changed = true
+    }
+    return changed
+  }
+
   dispose() {
     this._abortController?.abort()
+    this._detailsAbortController?.abort()
     this._abortController = null
   }
 }

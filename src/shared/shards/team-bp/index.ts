@@ -65,17 +65,62 @@ export interface TeamBpBanRecommendation {
   reasons: TeamBpRecommendationReason[]
 }
 
+export interface TeamBpMatchupEvidence {
+  championId: number
+  enemyChampionId: number
+  relationship: 'favorable' | 'unfavorable' | 'unknown'
+  winRate: number | null
+  games: number | null
+  isDirectPosition: boolean
+  source: 'opgg'
+}
+
+export interface TeamBpSynergyEvidence {
+  championIds: [number, number]
+  winRate: number | null
+  games: number | null
+  source: 'opgg'
+}
+
+export interface TeamBpPairRecommendation {
+  championIds: [number, number]
+  assignments: Array<{
+    championId: number
+    position: TeamBpPosition
+    playerPuuid: string | null
+  }>
+  projectedFinalLineup: Array<{ championId: number; position: TeamBpPosition }>
+  score: number
+  confidence: 'high' | 'medium' | 'low'
+  matchupEvidence: TeamBpMatchupEvidence[]
+  synergyEvidence: TeamBpSynergyEvidence[]
+  compositionImpact: {
+    adds: string[]
+    missingAfterPick: string[]
+    risks: string[]
+  }
+  breakdown: {
+    individual: number
+    matchup: number
+    synergy: number
+    composition: number
+    draftValue: number
+  }
+}
+
 export interface TeamBpRecommendations {
   picks: TeamBpPickRecommendation[]
   bans: TeamBpBanRecommendation[]
+  pairs: TeamBpPairRecommendation[]
 }
 
 export interface TeamBpAiRecommendation {
-  primaryPickChampionId: number | null
-  alternativePickChampionIds: number[]
+  primaryPairChampionIds: [number, number]
+  alternativePairChampionIds: Array<[number, number]>
   banChampionIds: number[]
   summary: string
   reasons: string[]
+  nextPlan: string
 }
 
 export interface TeamBpDataMetadata {
@@ -114,5 +159,5 @@ export function createEmptyTeamBpSession(): TeamBpSession {
 }
 
 export function createEmptyTeamBpRecommendations(): TeamBpRecommendations {
-  return { picks: [], bans: [] }
+  return { picks: [], bans: [], pairs: [] }
 }

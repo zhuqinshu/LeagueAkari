@@ -1,8 +1,9 @@
 import type { AggregatedAnalysis } from '@shared/data-adapter/analysis/player'
-import type { ChampionOverviewItem } from '@shared/data-adapter/champion-data'
+import type { ChampionDataDetails, ChampionOverviewItem } from '@shared/data-adapter/champion-data'
 import type { OngoingGameSimplifiedChampMastery } from '@shared/shards/ongoing-game'
 import {
   TEAM_BP_POSITIONS,
+  type TeamBpPairRecommendation,
   type TeamBpPickRecommendation,
   type TeamBpPosition,
   type TeamBpRecommendations,
@@ -14,16 +15,29 @@ export interface TeamBpScoringInput {
   overviews: Record<TeamBpPosition, ChampionOverviewItem[]>
   playerAnalysis: Record<string, AggregatedAnalysis>
   championMastery: Record<string, Record<number, OngoingGameSimplifiedChampMastery>>
+  details?: Record<string, ChampionDataDetails>
+  championRoles?: Record<number, string[]>
 }
 
 const clamp = (value: number, min = 0, max = 100) => Math.min(max, Math.max(min, value))
+
+export function createTeamBpDetailKey(championId: number, position: TeamBpPosition) {
+  return `${championId}:${position}`
+}
 
 /**
  * 将 OP.GG 强度、玩家熟练度和当前 BP 状态合并为稳定的基础推荐。
  * AI 只能在这里生成的合法候选中重排，不能绕过已选/已禁和位置约束。
  */
 export function scoreTeamBpRecommendations(input: TeamBpScoringInput): TeamBpRecommendations {
-  const { championMastery, overviews, playerAnalysis, session } = input
+  const {
+    championMastery,
+    details = {},
+    championRoles = {},
+    overviews,
+    playerAnalysis,
+    session
+  } = input
   const unavailableChampionIds = new Set([
     ...session.allyBans,
     ...session.enemyBans,
@@ -135,9 +149,15 @@ export function scoreTeamBpRecommendations(input: TeamBpScoringInput): TeamBpRec
   }
 
   picks.sort((left, right) => right.score - left.score)
-  const deduplicatedPicks = Array.from(
-    new Map(picks.map((recommendation) => [recommendation.championId, recommendation])).values()
-  ).slice(0, 15)
+  const candidatePicks = picks.slice(0, 20)
+  const seenChampionIds = new Set<number>()
+  const deduplicatedPicks = candidatePicks
+    .filter((recommendation) => {
+      if (seenChampionIds.has(recommendation.championId)) return false
+      seenChampionIds.add(recommendation.championId)
+      return true
+    })
+    .slice(0, 15)
 
   const banCandidates = new Map<number, { score: number; counterPressure: number }>()
   for (const position of TEAM_BP_POSITIONS) {
@@ -173,5 +193,206 @@ export function scoreTeamBpRecommendations(input: TeamBpScoringInput): TeamBpRec
     .sort((left, right) => right.score - left.score)
     .slice(0, 8)
 
-  return { picks: deduplicatedPicks, bans }
+  const pairs: TeamBpPairRecommendation[] = []
+  const lockedAllyChampionIds = session.allies
+    .map((member) => member.championId)
+    .filter((championId) => championId > 0)
+  for (let leftIndex = 0; leftIndex < candidatePicks.length; leftIndex++) {
+    for (let rightIndex = leftIndex + 1; rightIndex < candidatePicks.length; rightIndex++) {
+      const left = candidatePicks[leftIndex]
+      const right = candidatePicks[rightIndex]
+      if (left.championId === right.championId || left.position === right.position) continue
+
+      const usedChampionIds = new Set([
+        ...session.allies.map((member) => member.championId).filter((id) => id > 0),
+        left.championId,
+        right.championId
+      ])
+      const occupiedPositions = new Set([
+        ...session.allies
+          .filter((member) => member.championId > 0)
+          .map((member) => member.position),
+        left.position,
+        right.position
+      ])
+      // 本轮选择后继续贪心补全剩余位置，组合评分始终面向最终五人阵容。
+      const futurePicks = TEAM_BP_POSITIONS.flatMap((position) => {
+        if (occupiedPositions.has(position)) return []
+        const candidate = candidatePicks.find(
+          (pick) => pick.position === position && !usedChampionIds.has(pick.championId)
+        )
+        if (!candidate) return []
+        usedChampionIds.add(candidate.championId)
+        return [candidate]
+      })
+
+      const matchupEvidence = [left, right].flatMap((candidate) => {
+        const detail = details[createTeamBpDetailKey(candidate.championId, candidate.position)]
+        return session.enemies.flatMap((enemy) => {
+          if (enemy.championId <= 0) return []
+          const matchup = detail?.sections.matchups?.find(
+            (item) => item.championId === enemy.championId
+          )
+          if (!matchup) return []
+          return [
+            {
+              championId: candidate.championId,
+              enemyChampionId: enemy.championId,
+              relationship: matchup.relationship,
+              winRate: matchup.performance.winRate,
+              games: matchup.performance.games,
+              isDirectPosition: candidate.position === enemy.position,
+              source: 'opgg' as const
+            }
+          ]
+        })
+      })
+      const collectedSynergyEvidence = [left, right].flatMap((candidate) => {
+        const detail = details[createTeamBpDetailKey(candidate.championId, candidate.position)]
+        const otherPairChampionId =
+          candidate.championId === left.championId ? right.championId : left.championId
+        return [otherPairChampionId, ...lockedAllyChampionIds]
+          .filter((championId) => championId !== candidate.championId)
+          .flatMap((championId) => {
+            const synergy = detail?.sections.synergies?.find((item) =>
+              item.championIds.includes(championId)
+            )
+            if (!synergy) return []
+            return [
+              {
+                championIds: [candidate.championId, championId] as [number, number],
+                winRate: synergy.performance.winRate,
+                games: synergy.performance.games,
+                source: 'opgg' as const
+              }
+            ]
+          })
+      })
+      const seenSynergies = new Set<string>()
+      const synergyEvidence = collectedSynergyEvidence.filter((evidence) => {
+        const key = [...evidence.championIds].sort((a, b) => a - b).join(':')
+        if (seenSynergies.has(key)) return false
+        seenSynergies.add(key)
+        return true
+      })
+      const allChampionIds = [
+        ...lockedAllyChampionIds,
+        left.championId,
+        right.championId,
+        ...futurePicks.map((pick) => pick.championId)
+      ]
+      const roles = new Set(
+        allChampionIds
+          .flatMap((championId) => championRoles[championId] ?? [])
+          .map((role) => role.toLowerCase())
+      )
+      const adds = [
+        ...(roles.has('tank') ? ['frontline', 'engage'] : []),
+        ...(roles.has('mage') ? ['magic-damage', 'waveclear'] : []),
+        ...(roles.has('marksman') ? ['physical-damage', 'late-carry'] : []),
+        ...(roles.has('support') ? ['peel', 'utility'] : []),
+        ...(roles.has('assassin') ? ['backline-access'] : [])
+      ]
+      const missingAfterPick = [
+        ...(!roles.has('tank') ? ['frontline'] : []),
+        ...(!roles.has('mage') ? ['magic-damage'] : []),
+        ...(!roles.has('marksman') ? ['physical-damage'] : [])
+      ]
+      const risks = missingAfterPick.map((item) => `missing-${item}`)
+      const synergyRates = synergyEvidence
+        .map((evidence) => evidence.winRate)
+        .filter((winRate): winRate is number => winRate !== null)
+      const synergy = synergyRates.length
+        ? clamp(
+            synergyRates.reduce((sum, winRate) => sum + 50 + (winRate - 0.5) * 500, 0) /
+              synergyRates.length
+          )
+        : 50
+      const currentIndividual = (left.score + right.score) / 2
+      const futureIndividual = futurePicks.length
+        ? futurePicks.reduce((sum, pick) => sum + pick.score, 0) / futurePicks.length
+        : currentIndividual
+      const individual = currentIndividual * 0.7 + futureIndividual * 0.3
+      const detailedMatchupScores = [left, right].map((candidate) => {
+        const directEvidence = matchupEvidence.filter(
+          (evidence) => evidence.championId === candidate.championId && evidence.isDirectPosition
+        )
+        if (!directEvidence.length) return candidate.breakdown.matchup
+
+        return (
+          directEvidence.reduce((sum, evidence) => {
+            const rawScore =
+              evidence.winRate !== null
+                ? clamp(50 + (evidence.winRate - 0.5) * 500)
+                : evidence.relationship === 'favorable'
+                  ? 65
+                  : evidence.relationship === 'unfavorable'
+                    ? 35
+                    : 50
+            // 小样本向 50 分收缩，500 场及以上才完整采用详细胜率。
+            const confidenceWeight =
+              evidence.games !== null
+                ? Math.min(evidence.games / 500, 1)
+                : evidence.relationship === 'unknown'
+                  ? 0
+                  : 0.5
+            return sum + 50 + (rawScore - 50) * confidenceWeight
+          }, 0) / directEvidence.length
+        )
+      })
+      const matchup =
+        detailedMatchupScores.reduce((sum, score) => sum + score, 0) / detailedMatchupScores.length
+      const composition = clamp(55 + adds.length * 4 - missingAfterPick.length * 8)
+      const draftValue = (left.breakdown.draftValue + right.breakdown.draftValue) / 2
+      const score = clamp(
+        individual * 0.4 + matchup * 0.2 + synergy * 0.2 + composition * 0.15 + draftValue * 0.05
+      )
+      const evidenceGames = [...matchupEvidence, ...synergyEvidence]
+        .map((evidence) => evidence.games ?? 0)
+        .reduce((sum, games) => sum + games, 0)
+
+      pairs.push({
+        championIds: [left.championId, right.championId],
+        assignments: [left, right].map((candidate) => ({
+          championId: candidate.championId,
+          position: candidate.position,
+          playerPuuid: candidate.playerPuuid
+        })),
+        projectedFinalLineup: [
+          ...session.allies
+            .filter((member) => member.championId > 0 && member.position)
+            .map((member) => ({ championId: member.championId, position: member.position! })),
+          ...[left, right, ...futurePicks].map((pick) => ({
+            championId: pick.championId,
+            position: pick.position
+          }))
+        ],
+        score: Math.round(score),
+        confidence: evidenceGames >= 500 ? 'high' : evidenceGames > 0 ? 'medium' : 'low',
+        matchupEvidence,
+        synergyEvidence,
+        compositionImpact: { adds: [...new Set(adds)], missingAfterPick, risks },
+        breakdown: {
+          individual: Math.round(individual),
+          matchup: Math.round(matchup),
+          synergy: Math.round(synergy),
+          composition: Math.round(composition),
+          draftValue: Math.round(draftValue)
+        }
+      })
+    }
+  }
+  pairs.sort((left, right) => right.score - left.score)
+  const seenPairAssignments = new Set<string>()
+  const uniquePairs = pairs.filter((pair) => {
+    const key = pair.assignments
+      .map((assignment) => `${assignment.championId}:${assignment.position}`)
+      .sort()
+      .join('|')
+    if (seenPairAssignments.has(key)) return false
+    seenPairAssignments.add(key)
+    return true
+  })
+
+  return { picks: candidatePicks, bans, pairs: uniquePairs.slice(0, 20) }
 }

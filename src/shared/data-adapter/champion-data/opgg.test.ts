@@ -111,6 +111,43 @@ describe('OP.GG champion data adapter', () => {
     })
   })
 
+  it('drops champions without statistics for the requested position', () => {
+    const response = {
+      data: [
+        {
+          id: 64,
+          is_rotation: false,
+          is_rip: false,
+          average_stats: { play: 100, ban_rate: 0.1, tier_data: tierData },
+          positions: [
+            {
+              name: 'JUNGLE',
+              stats: {
+                play: 100,
+                win_rate: 0.51,
+                pick_rate: 0.1,
+                role_rate: 1,
+                ban_rate: 0.1,
+                kda: 3,
+                tier_data: tierData,
+                total_place: undefined as never,
+                first_place: undefined as never
+              },
+              roles: [],
+              counters: []
+            }
+          ]
+        }
+      ],
+      meta: { version: '16.17', cached_at: new Date('2026-08-31T00:00:00Z') }
+    } as OpggChampionsResponse
+
+    expect(
+      adaptOpggChampionOverview(response, { mode: 'ranked', position: 'utility' }).sections
+        .champions
+    ).toEqual([])
+  })
+
   it('keeps supported empty sections present in details', () => {
     const response = {
       data: {
