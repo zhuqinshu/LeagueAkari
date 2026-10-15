@@ -41,7 +41,7 @@ const UPLOAD_TIMEOUT_MS = 20000
  * 每轮最多补多少局详情。详情一局上百 KB，单轮限住用量，
  * 历史对局靠每轮补几局慢慢补齐，不必一次压满上游
  */
-const MAX_DETAILS_PER_SYNC = 10
+const MAX_DETAILS_PER_SYNC = 5
 /** 详情请求超时，比摘要上报宽松：详情体量大得多 */
 const DETAIL_TIMEOUT_MS = 60000
 
@@ -309,14 +309,23 @@ class MatchSyncShard {
 
   /** 单局详情，返回 stored（已上报）| unavailable（上游确认没有）| failed（下一轮重试） */
   async _syncOneDetail(gameId) {
+    let summary
     let detail
 
     try {
-      const response = await this._sgp.api.matchHistoryQuery.getGameDetailsByGameId(
-        Number(gameId),
-        { signal: AbortSignal.timeout(DETAIL_TIMEOUT_MS) }
-      )
-      detail = response.data
+      // SUMMARY 提供参与者面板（符文、装备、挑战）与队伍数据，DETAILS 提供每帧属性与事件，
+      // 详情页六个 tab 要靠两份一起才渲染得出来
+      const [summaryResponse, detailResponse] = await Promise.all([
+        this._sgp.api.matchHistoryQuery.getGameSummaryByGameId(Number(gameId), {
+          signal: AbortSignal.timeout(DETAIL_TIMEOUT_MS)
+        }),
+        this._sgp.api.matchHistoryQuery.getGameDetailsByGameId(Number(gameId), {
+          signal: AbortSignal.timeout(DETAIL_TIMEOUT_MS)
+        })
+      ])
+
+      summary = summaryResponse.data
+      detail = detailResponse.data
     } catch (error) {
       // 404 表示上游已经没有这局详情（超出保留期），报给服务端记档后不再重试；
       // 其余错误（网络、令牌还没就绪）留给下一轮
@@ -331,15 +340,15 @@ class MatchSyncShard {
       return 'failed'
     }
 
-    // 有响应但没有 json 主体等于拿不到，同样记档不再重试
-    if (!detail || !detail.json) {
+    // 有响应但缺 json 主体等于拿不到，同样记档不再重试
+    if (!summary || !summary.json || !detail || !detail.json) {
       await this._uploadDetails([{ gameId }])
 
       return 'unavailable'
     }
 
-    // 详情一局一个请求：单份上百 KB，攒批只会让一份坏数据带崩一整批
-    await this._uploadDetails([{ gameId, details: detail }])
+    // 详情一局一个请求：两份原文加起来上百 KB，攒批只会让一份坏数据带崩一整批
+    await this._uploadDetails([{ gameId, summary, details: detail }])
 
     return 'stored'
   }
@@ -368,7 +377,7 @@ class MatchSyncShard {
       },
       body: JSON.stringify({
         clientId: `akari-${os.hostname()}`,
-        clientVersion: '1.1.0',
+        clientVersion: '1.2.0',
         details
       }),
       signal: AbortSignal.timeout(DETAIL_TIMEOUT_MS)
