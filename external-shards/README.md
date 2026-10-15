@@ -2,9 +2,9 @@
 
 League Akari 内置了外部 shard 装载机制：启动时会扫描 **exe 同级的 `shards/` 目录**，
 把其中的每个 `.js` 通过 `require` 加载并交给 `AkariManager` 托管
-（见 `src/main/bootstrap/index.ts`，commit `eb6d5dc5`，v1.5.0 起可用）。
+（见 `src/main/bootstrap/index.ts`，v1.5.0 起可用）。
 
-所以新增功能不必改源码、不必重新打包。
+所以新增功能不必改源码、不必重新打包，运行进程仍是 `LeagueAkari.exe`。
 
 ## 安装
 
@@ -21,40 +21,70 @@ league-akari/
 
 目录扫描**不递归**，文件必须直接位于 `shards/` 下。
 
-## 当前阶段：只落盘，不联网
+## 配置
 
-第一阶段只做一件事——验证国服客户端到底推不推结算事件，并把真实 payload 存下来。
-打包后的应用看不到 stdout，且事件名与字段结构必须先拿到真实数据才能定，
-所以先落盘、暂不上报服务器。
+首次启动会在 `shards/` 下生成 `match-sync.config.json` 模板，填好后重启 League Akari：
 
-订阅的是全量事件再按 `end-of-game` 关键字过滤，这样一次对局可以把
-`eog-stats-block` 与 `gameclient-eog-stats-block` 两个候选事件一起抓到，
-不用反复打游戏试错。验证完成后会收敛到确定的那一个事件名。
+```json
+{
+  "endpoint": "https://<你的后端域名>/api/v1/sync/matches",
+  "token": "<与服务端 SYNC_TOKEN 一致>",
+  "intervalSeconds": 120,
+  "initialDelaySeconds": 15
+}
+```
+
+`endpoint` 建议直接用 HTTPS 域名，避免明文令牌走公网。
+
+- `endpoint` / `token` 任一为空时同步停用，只在日志里提示一次，不会反复请求
+- `intervalSeconds` 最小 30 秒，避免手误写 0 变成死循环
+
+## 工作流程
+
+```
+每 intervalSeconds 一次
+  └── 取当前召唤师 puuid（LCU 未连接则静默跳过，等下一轮）
+        └── 分页扫描对局列表，收集本地没上报过的 gameId
+              └── 逐个拉对局详情，归一化成后端约定结构
+                    └── 每 50 局一批 POST 到服务端
+```
+
+几个刻意的取舍：
+
+- **不用结算事件推送，改用定时拉取。** 国服结算推送不稳定，而本场景只要求「事后能查到」，
+  晚几分钟入库完全可以接受。
+- **不在客户端判断是否纳入。** 谁是车队成员只有服务端知道，五排门槛
+  （同队车队成员数）比较也放在服务端，客户端不重复这套配置，避免两边不一致。
+  客户端只保证「新对局不漏报」。
+- **分页扫描以「整页没有新对局」作为收敛条件。** 国服的分页参数不一定生效，
+  生效时逐页回溯、不生效时第二页与第一页重复，两种情况都会在这一步停下。
+- **只有上报成功才把 gameId 记为已上报。** 上报失败时下一轮会重试，不会丢数据。
 
 ## 数据位置
 
 `%APPDATA%\league-akari\match-sync\`
 
-- `eog-<日期>.jsonl` —— 追加流水，每行一条事件
-- `last-eog.json` —— 最后一次事件，格式化后便于阅读
+- `state.json` —— 已上报的 gameId、最近一次轮询/上报时间与结果，排查时先看它
+- `sync-<日期>.log` —— 上报结果与异常，打包后的应用看不到 stdout，日志只能落文件
 
-找不到该目录时，在 `%APPDATA%` 下搜索 `match-sync` 即可。
+配置模板写在 `shards/match-sync.config.json`（与 shard 同级）。
 
-## 验证步骤
+## 排障
 
-1. 放好文件，重启 League Akari
-2. 打一局五排（对局要正常结算）
-3. 看 `match-sync` 目录是否有新文件
-   - 有 → 国服会推送结算事件，方案确定
-   - 没有 → 国服不推该事件，改用对局列表轮询兜底
+| 现象                   | 先看什么                                                       |
+| ---------------------- | -------------------------------------------------------------- |
+| 没有任何日志           | 配置文件是否填写，`endpoint`/`token` 是否为空                  |
+| `lastError` 是上报失败 | 服务器是否可达、`token` 是否与服务端一致                       |
+| 有上报但小程序查不到   | 该局同队车队成员是否够门槛，见服务端 `INGEST_MIN_TEAM_MEMBERS` |
 
-## 后续
+## 离线自测
 
-- 把 payload 映射成自己的数据结构
-- 增加上报到自建服务器的能力（游戏 ID 去重）
-- 扩展到 `participants` 落库，供小程序查询
+不依赖 Windows 与真实游戏客户端，用一个假的 `leagueClient` 即可跑通全链路：
 
-## 说明
+```bash
+MATCH_SYNC_DATA_DIR=/tmp/akari-selftest/data \
+MATCH_SYNC_CONFIG=/tmp/akari-selftest/config.json \
+node your-harness.js
+```
 
-该 shard 运行在 League Akari 主进程内，进程名仍是 `LeagueAkari.exe`，
-不引入新的进程或第三方可执行文件。
+两个环境变量只用于这种自测场景，线上配置仍来自 `shards/` 下的文件。
