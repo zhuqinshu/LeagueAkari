@@ -377,7 +377,7 @@ class MatchSyncShard {
       },
       body: JSON.stringify({
         clientId: `akari-${os.hostname()}`,
-        clientVersion: '1.2.0',
+        clientVersion: '1.0.0',
         details
       }),
       signal: AbortSignal.timeout(DETAIL_TIMEOUT_MS)
