@@ -37,6 +37,13 @@ const SENT_GAME_ID_LIMIT = 4000
 /** 服务端单次上报上限 50 局，这里与之对齐 */
 const UPLOAD_BATCH_SIZE = 50
 const UPLOAD_TIMEOUT_MS = 20000
+/**
+ * 每轮最多补多少局详情。详情一局上百 KB，单轮限住用量，
+ * 历史对局靠每轮补几局慢慢补齐，不必一次压满上游
+ */
+const MAX_DETAILS_PER_SYNC = 10
+/** 详情请求超时，比摘要上报宽松：详情体量大得多 */
+const DETAIL_TIMEOUT_MS = 60000
 
 const DEFAULT_CONFIG = {
   /** 自建服务端上报地址，例如 http://1.2.3.4:3000/api/v1/sync/matches */
@@ -86,14 +93,18 @@ class MatchSyncShard {
 
   static priority = 0
 
-  static dependencies = ['league-client-main']
+  // 对局摘要来自 LCU，对局详情（含每帧属性）只有 SGP 才有
+  static dependencies = ['league-client-main', 'sgp-main']
 
-  constructor(leagueClient) {
+  constructor(leagueClient, sgp) {
     this._leagueClient = leagueClient
+    this._sgp = sgp
     this._dataDir = resolveDataDir()
     this._stateFile = path.join(this._dataDir, 'state.json')
     this._config = null
     this._state = null
+    // 同级接口（待补详情、详情上报）的地址前缀，空串表示详情补拉停用
+    this._syncBase = ''
     this._timer = null
     this._disposed = false
   }
@@ -111,6 +122,17 @@ class MatchSyncShard {
       // 没配置地址或令牌时不轮询，避免无意义地反复拉 LCU
       this._writeLog('未配置 endpoint / token，同步已停用，请填写配置文件后重启 League Akari')
       return
+    }
+
+    // 配置里只填一个上报地址，待补详情与详情上报按同一前缀推导出来 ——
+    // 在 Windows 上多填几个地址只会多几个填错的机会
+    if (/\/matches$/.test(this._config.endpoint)) {
+      this._syncBase = this._config.endpoint.slice(0, -'/matches'.length)
+    } else {
+      this._syncBase = ''
+      this._writeLog(
+        `endpoint 需指向 .../api/v1/sync/matches，当前为 ${this._config.endpoint}，详情补拉已停用`
+      )
     }
 
     this._schedule(this._config.initialDelaySeconds * 1000)
@@ -176,6 +198,23 @@ class MatchSyncShard {
     // 采集阶段会把 backfillDone 翻成 true，所以先记下本轮属于哪种模式，
     // 供 _markSent 决定新增 gameId 插在列表头部还是尾部
     const backfilling = !this._state.backfillDone
+
+    // 摘要与详情分两段跑，各自兜异常：详情补拉失败不该把已经成功的战绩入库标成异常，
+    // 反过来详情也不该因为没有新对局就跳过（历史详情是逐轮补完的）
+    try {
+      await this._syncNewMatches(puuid, backfilling)
+    } catch (error) {
+      this._recordError(error)
+    }
+
+    try {
+      await this._syncDetails()
+    } catch (error) {
+      this._recordError(error)
+    }
+  }
+
+  async _syncNewMatches(puuid, backfilling) {
     const gameIds = await this._collectNewGameIds(puuid)
 
     if (gameIds.length === 0) {
@@ -222,6 +261,124 @@ class MatchSyncShard {
     this._state.lastError = null
     this._saveState()
     this._writeLog(`上报 ${matches.length} 局，服务端新入库 ${accepted} 局，未达门槛 ${ignored} 局`)
+  }
+
+  /**
+   * 补拉对局详情。
+   *
+   * 拉哪几局由服务端决定（已入库但还没有详情的对局，新的在前），客户端不自己记
+   * 「哪几局还没上报详情」—— 重启、换机器、中途崩掉都不会漏局，历史也能自动补齐。
+   */
+  async _syncDetails() {
+    if (!this._syncBase) {
+      return
+    }
+
+    const gameIds = await this._fetchPendingDetailGameIds()
+
+    if (gameIds.length === 0) {
+      return
+    }
+
+    let stored = 0
+    let unavailable = 0
+    let failed = 0
+
+    for (const gameId of gameIds) {
+      const outcome = await this._syncOneDetail(gameId)
+
+      if (outcome === 'stored') {
+        stored += 1
+      } else if (outcome === 'unavailable') {
+        unavailable += 1
+      } else {
+        failed += 1
+      }
+    }
+
+    this._state.lastDetails = { stored, unavailable, failed }
+
+    // 成功时不清 lastError：本轮摘要阶段的异常要留着，它由摘要阶段每轮自己重置
+    if (failed > 0) {
+      this._state.lastError = `有 ${failed} 局详情拉取失败，下一轮重试`
+    }
+
+    this._saveState()
+    this._writeLog(`补详情 ${stored} 局，确认无详情 ${unavailable} 局，失败待重试 ${failed} 局`)
+  }
+
+  /** 单局详情，返回 stored（已上报）| unavailable（上游确认没有）| failed（下一轮重试） */
+  async _syncOneDetail(gameId) {
+    let detail
+
+    try {
+      const response = await this._sgp.api.matchHistoryQuery.getGameDetailsByGameId(
+        Number(gameId),
+        { signal: AbortSignal.timeout(DETAIL_TIMEOUT_MS) }
+      )
+      detail = response.data
+    } catch (error) {
+      // 404 表示上游已经没有这局详情（超出保留期），报给服务端记档后不再重试；
+      // 其余错误（网络、令牌还没就绪）留给下一轮
+      if (error && error.response && error.response.status === 404) {
+        await this._uploadDetails([{ gameId }])
+
+        return 'unavailable'
+      }
+
+      this._writeLog(`拉取对局 ${gameId} 详情失败，下一轮重试: ${error && error.message}`)
+
+      return 'failed'
+    }
+
+    // 有响应但没有 json 主体等于拿不到，同样记档不再重试
+    if (!detail || !detail.json) {
+      await this._uploadDetails([{ gameId }])
+
+      return 'unavailable'
+    }
+
+    // 详情一局一个请求：单份上百 KB，攒批只会让一份坏数据带崩一整批
+    await this._uploadDetails([{ gameId, details: detail }])
+
+    return 'stored'
+  }
+
+  async _fetchPendingDetailGameIds() {
+    const response = await fetch(`${this._syncBase}/pending-details?limit=${MAX_DETAILS_PER_SYNC}`, {
+      headers: { Authorization: `Bearer ${this._config.token}` },
+      signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS)
+    })
+
+    if (!response.ok) {
+      throw new Error(`查询待补详情失败 HTTP ${response.status} ${await response.text()}`)
+    }
+
+    const body = await response.json()
+
+    return Array.isArray(body.gameIds) ? body.gameIds.map((id) => String(id)) : []
+  }
+
+  async _uploadDetails(details) {
+    const response = await fetch(`${this._syncBase}/details`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${this._config.token}`
+      },
+      body: JSON.stringify({
+        clientId: `akari-${os.hostname()}`,
+        clientVersion: '1.1.0',
+        details
+      }),
+      signal: AbortSignal.timeout(DETAIL_TIMEOUT_MS)
+    })
+
+    if (!response.ok) {
+      throw new Error(`详情上报失败 HTTP ${response.status} ${await response.text()}`)
+    }
+
+    return response.json()
   }
 
   async _resolvePuuid() {
