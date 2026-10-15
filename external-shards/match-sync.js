@@ -73,7 +73,9 @@ function toInt(value, fallback = 0) {
 
 function readJson(file, fallback) {
   try {
-    return JSON.parse(fs.readFileSync(file, 'utf-8'))
+    // Windows 记事本等编辑器存 UTF-8 会带 BOM，直接 JSON.parse 会抛错；
+    // 而配置读失败会被兜成默认值（endpoint 为空 = 同步停用），表现是「什么都没发生」，很难查
+    return JSON.parse(fs.readFileSync(file, 'utf-8').replace(/^\uFEFF/, ''))
   } catch (error) {
     return fallback
   }
