@@ -20,15 +20,20 @@ const path = require('node:path')
 
 /** LCU 对局列表单页条数，与分页参数一起使用 */
 const PAGE_SIZE = 100
-/** 最多回溯页数。国服分页参数不一定生效，靠「该页没有新对局就停」收敛 */
-const MAX_PAGES = 5
+/**
+ * 最多回溯页数，即首次运行最多补多少历史（30 页 = 3000 局）。
+ * 到底时 LCU 会返回空页，所以这个值只是兜底上限；国服分页参数不生效时
+ * 每页都是同一批对局，最多白跑一轮，之后靠 backfillDone 收敛。
+ */
+const MAX_PAGES = 30
 /** 单次同步最多拉取多少局详情，避免长时间未开机后一次性压满 LCU */
 const MAX_MATCHES_PER_SYNC = 100
 /**
- * 本地已上报 gameId 的保留数量。
- * 必须明显大于 PAGE_SIZE * MAX_PAGES，否则会把刚上报过的对局重复拉详情。
+ * 本地已上报 gameId 的保留数量，裁剪时丢最老的。
+ * 必须大于 PAGE_SIZE * MAX_PAGES，否则回溯出来的历史会滚出窗口、
+ * 被当成新对局反复重拉详情。
  */
-const SENT_GAME_ID_LIMIT = 1000
+const SENT_GAME_ID_LIMIT = 4000
 /** 服务端单次上报上限 50 局，这里与之对齐 */
 const UPLOAD_BATCH_SIZE = 50
 const UPLOAD_TIMEOUT_MS = 20000
@@ -97,6 +102,8 @@ class MatchSyncShard {
     this._config = this._loadConfig()
     this._state = readJson(this._stateFile, {}) || {}
     this._state.sentGameIds = Array.isArray(this._state.sentGameIds) ? this._state.sentGameIds : []
+    // 历史回溯是否已走到底；未走到底之前不能因为「整页都上报过」就收敛
+    this._state.backfillDone = this._state.backfillDone === true
 
     if (!this._config.endpoint || !this._config.token) {
       // 没配置地址或令牌时不轮询，避免无意义地反复拉 LCU
@@ -164,6 +171,9 @@ class MatchSyncShard {
       return
     }
 
+    // 采集阶段会把 backfillDone 翻成 true，所以先记下本轮属于哪种模式，
+    // 供 _markSent 决定新增 gameId 插在列表头部还是尾部
+    const backfilling = !this._state.backfillDone
     const gameIds = await this._collectNewGameIds(puuid)
 
     if (gameIds.length === 0) {
@@ -199,7 +209,10 @@ class MatchSyncShard {
 
       accepted += toInt(result.accepted)
       ignored += toInt(result.ignored)
-      this._markSent(batch.map((match) => match.gameId))
+      this._markSent(
+        batch.map((match) => match.gameId),
+        backfilling
+      )
     }
 
     this._state.lastUploadAt = new Date().toISOString()
@@ -230,13 +243,19 @@ class MatchSyncShard {
 
   /**
    * 按页扫描对局列表，收集本地还没上报过的 gameId（新在前）。
-   * 遇到「整页都没有新对局」就停止：国服分页参数生效时逐页回溯，
-   * 不生效时第二页会与第一页重复，同样会在这一步收敛。
+   *
+   * 两种模式：
+   * - 回溯（backfillDone 为 false）：一直往外翻页直到「到底」或翻满 MAX_PAGES，
+   *   每轮最多取 MAX_MATCHES_PER_SYNC 局，所以历史是逐轮补齐的（每轮 100 局）。
+   *   这一阶段不能因为「整页都上报过」就停 —— 那正是回溯进行到一半的样子，
+   *   一停就永远只看得见最新一页。
+   * - 增量（backfillDone 为 true）：平日只需看最新一页，整页没有新对局就收敛。
    */
   async _collectNewGameIds(puuid) {
     const sent = new Set(this._state.sentGameIds)
     const found = []
     const visited = new Set()
+    const backfilling = !this._state.backfillDone
 
     for (let page = 0; page < MAX_PAGES && found.length < MAX_MATCHES_PER_SYNC; page++) {
       const begin = page * PAGE_SIZE
@@ -251,6 +270,9 @@ class MatchSyncShard {
           : []
 
       if (games.length === 0) {
+        // 历史到底了，之后只需增量
+        this._state.backfillDone = true
+
         break
       }
 
@@ -271,8 +293,13 @@ class MatchSyncShard {
         }
       }
 
-      if (fresh === 0) {
+      if (fresh === 0 && !backfilling) {
         break
+      }
+
+      // 翻到最后一页说明已经走到底（LRU 里就是这么多），后续按增量处理
+      if (page + 1 === MAX_PAGES) {
+        this._state.backfillDone = true
       }
     }
 
@@ -301,12 +328,14 @@ class MatchSyncShard {
     return response.json()
   }
 
-  _markSent(gameIds) {
-    // 新上报的排在前面，裁剪时保留最近的，旧的会滚出扫描窗口
-    this._state.sentGameIds = [...new Set([...gameIds, ...this._state.sentGameIds])].slice(
-      0,
-      SENT_GAME_ID_LIMIT
-    )
+  _markSent(gameIds, backfilling) {
+    // 列表按「新在前」维护，裁剪时丢最老的：
+    // 回溯阶段拿到的是更老的对局，追加到尾部；增量阶段拿到的是最新对局，放头部。
+    const merged = backfilling
+      ? [...this._state.sentGameIds, ...gameIds]
+      : [...gameIds, ...this._state.sentGameIds]
+
+    this._state.sentGameIds = [...new Set(merged)].slice(0, SENT_GAME_ID_LIMIT)
   }
 
   _recordError(error) {
