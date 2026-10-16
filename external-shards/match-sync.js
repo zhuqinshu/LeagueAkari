@@ -2,8 +2,8 @@
  * League Akari 外部 shard：对局同步
  *
  * 职责边界：
- * - 客户端只负责「把新对局如实送上去」：定时拉取当前召唤师的对局列表，
- *   对没上报过的 gameId 拉详情、归一化、批量上报。
+ * - 客户端只负责「把新对局如实送上去」：定时从 SGP 拉当前召唤师的对局列表，
+ *   对没上报过的对局归一化、批量上报。
  * - 是否纳入由服务端判断：谁是车队成员只有服务端知道，
  *   五排门槛（同队车队成员数）比较也放在服务端，客户端不重复这套配置。
  *
@@ -18,32 +18,41 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 
-/** LCU 对局列表单页条数，与分页参数一起使用 */
-const PAGE_SIZE = 100
 /**
- * 最多回溯页数，即首次运行最多补多少历史（30 页 = 3000 局）。
- * 到底时 LCU 会返回空页，所以这个值只是兜底上限；国服分页参数不生效时
+ * 对局列表单页条数。SGP 列表每局都带完整参与者数据（约 200KB/局），
+ * 一次要太多既拖慢这一轮，也会让响应体大到没必要
+ */
+const PAGE_SIZE = 20
+/**
+ * 最多回溯页数，即首次运行最多补多少历史（60 页 × 20 局 = 1200 局）。
+ * 到底时上游会返回空页，所以这个值只是兜底上限；上游对 count 有更小上限时
  * 每页都是同一批对局，最多白跑一轮，之后靠 backfillDone 收敛。
  */
-const MAX_PAGES = 30
-/** 单次同步最多拉取多少局详情，避免长时间未开机后一次性压满 LCU */
+const MAX_PAGES = 60
+/** 单次同步最多拉取多少局，避免长时间未开机后一次性压满上游 */
 const MAX_MATCHES_PER_SYNC = 100
 /**
  * 本地已上报 gameId 的保留数量，裁剪时丢最老的。
  * 必须大于 PAGE_SIZE * MAX_PAGES，否则回溯出来的历史会滚出窗口、
- * 被当成新对局反复重拉详情。
+ * 被当成新对局反复重报。
  */
 const SENT_GAME_ID_LIMIT = 4000
 /** 服务端单次上报上限 50 局，这里与之对齐 */
 const UPLOAD_BATCH_SIZE = 50
 const UPLOAD_TIMEOUT_MS = 20000
+/** 对局列表请求超时，比上报宽松：一页要拖回整批对局的完整数据 */
+const LIST_TIMEOUT_MS = 30000
 /**
  * 每轮最多补多少局详情。详情一局上百 KB，单轮限住用量，
  * 历史对局靠每轮补几局慢慢补齐，不必一次压满上游
  */
 const MAX_DETAILS_PER_SYNC = 5
-/** 详情请求超时，比摘要上报宽松：详情体量大得多 */
-const DETAIL_TIMEOUT_MS = 60000
+/**
+ * 详情请求超时。一局详情报文约 1MB（两份 SGP 原文），家宽上行不稳时
+ * 单次上报实测会超过 60s（服务端其实已经收完并入库，只是响应回不来），
+ * 所以放宽到 180s；真超时也只影响这一局，由上层逐局兜底继续后面的对局
+ */
+const DETAIL_TIMEOUT_MS = 180000
 
 const DEFAULT_CONFIG = {
   /** 自建服务端上报地址，例如 http://1.2.3.4:3000/api/v1/sync/matches */
@@ -93,7 +102,7 @@ class MatchSyncShard {
 
   static priority = 0
 
-  // 对局摘要来自 LCU，对局详情（含每帧属性）只有 SGP 才有
+  // 对局列表来自 SGP；LCU 只用来取当前召唤师 puuid
   static dependencies = ['league-client-main', 'sgp-main']
 
   constructor(leagueClient, sgp) {
@@ -215,9 +224,11 @@ class MatchSyncShard {
   }
 
   async _syncNewMatches(puuid, backfilling) {
-    const gameIds = await this._collectNewGameIds(puuid)
+    // 列表直接取 SGP 的完整对局数据，不必再逐局调 LCU 拿详情：
+    // 国服 LCU 的 match-history 接口会成段时间返回 500，走它会让采集阶段一起空转
+    const games = await this._collectNewMatches(puuid)
 
-    if (gameIds.length === 0) {
+    if (games.length === 0) {
       this._state.lastError = null
       this._saveState()
       return
@@ -225,9 +236,8 @@ class MatchSyncShard {
 
     const matches = []
 
-    for (const gameId of gameIds) {
-      const response = await this._leagueClient.api.matchHistory.getGame(Number(gameId))
-      const match = normalizeMatch(response.data)
+    for (const game of games) {
+      const match = normalizeSgpMatch(game)
 
       if (match) {
         matches.push(match)
@@ -235,8 +245,8 @@ class MatchSyncShard {
     }
 
     if (matches.length === 0) {
-      // 详情拉不到的对局不标记已上报，下一轮还会重试
-      this._state.lastError = '新对局详情拉取失败，本轮没有可上报数据'
+      // 归一化失败的对局不标记已上报，下一轮还会重试
+      this._state.lastError = '新对局没有可用参与者，本轮没有可上报数据'
       this._saveState()
       return
     }
@@ -285,7 +295,16 @@ class MatchSyncShard {
     let failed = 0
 
     for (const gameId of gameIds) {
-      const outcome = await this._syncOneDetail(gameId)
+      let outcome
+
+      try {
+        outcome = await this._syncOneDetail(gameId)
+      } catch (error) {
+        // 单局异常只能影响这一局：异常抛出去会连带丢掉本轮剩下的对局，
+        // 下一轮又从头开始，永远补不完。上报超时是最常见的一种（报文约 1MB）
+        outcome = 'failed'
+        this._writeLog(`对局 ${gameId} 详情处理异常，下一轮重试: ${error && error.message}`)
+      }
 
       if (outcome === 'stored') {
         stored += 1
@@ -410,32 +429,32 @@ class MatchSyncShard {
   }
 
   /**
-   * 按页扫描对局列表，收集本地还没上报过的 gameId（新在前）。
+   * 按页扫描对局列表，收集本地还没上报过的对局（新在前）。
+   *
+   * 列表走 SGP 而不是 LCU：国服 LCU 的 match-history 接口会成段时间返回 500
+   * （Missing configuration data），而同一时刻 SGP 是好的，走 LCU 会让整个采集
+   * 阶段跟着一起空转；SGP 列表每局已带完整参与者数据，也不必再逐局拉详情。
    *
    * 两种模式：
    * - 回溯（backfillDone 为 false）：一直往外翻页直到「到底」或翻满 MAX_PAGES，
-   *   每轮最多取 MAX_MATCHES_PER_SYNC 局，所以历史是逐轮补齐的（每轮 100 局）。
+   *   每轮最多取 MAX_MATCHES_PER_SYNC 局，所以历史是逐轮补齐的。
    *   这一阶段不能因为「整页都上报过」就停 —— 那正是回溯进行到一半的样子，
    *   一停就永远只看得见最新一页。
    * - 增量（backfillDone 为 true）：平日只需看最新一页，整页没有新对局就收敛。
    */
-  async _collectNewGameIds(puuid) {
+  async _collectNewMatches(puuid) {
     const sent = new Set(this._state.sentGameIds)
     const found = []
     const visited = new Set()
     const backfilling = !this._state.backfillDone
+    let startIndex = 0
 
     for (let page = 0; page < MAX_PAGES && found.length < MAX_MATCHES_PER_SYNC; page++) {
-      const begin = page * PAGE_SIZE
-      const response = await this._leagueClient.api.matchHistory.getMatchHistory(
+      const response = await this._sgp.api.matchHistoryQuery.getMatchHistorySummaryByPlayerPuuid(
         puuid,
-        begin,
-        begin + PAGE_SIZE - 1
+        { startIndex, count: PAGE_SIZE, signal: AbortSignal.timeout(LIST_TIMEOUT_MS) }
       )
-      const games =
-        response.data && response.data.games && Array.isArray(response.data.games.games)
-          ? response.data.games.games
-          : []
+      const games = response.data && Array.isArray(response.data.games) ? response.data.games : []
 
       if (games.length === 0) {
         // 历史到底了，之后只需增量
@@ -444,10 +463,21 @@ class MatchSyncShard {
         break
       }
 
+      // 上游对 count 可能有比 PAGE_SIZE 更小的上限，按实际收到的条数推进页码，
+      // 否则被截断的那一段对局会被整段跳过
+      startIndex += games.length
+
       let fresh = 0
 
       for (const game of games) {
-        const gameId = String(game.gameId)
+        const json = game && game.json
+
+        // 列表里偶尔会有只有 metadata、没有 json 主体的条目，拿不到数据就不当它是对局
+        if (!json || json.gameId === undefined || json.gameId === null) {
+          continue
+        }
+
+        const gameId = String(json.gameId)
 
         if (visited.has(gameId)) {
           continue
@@ -456,7 +486,7 @@ class MatchSyncShard {
         visited.add(gameId)
 
         if (!sent.has(gameId)) {
-          found.push(gameId)
+          found.push(json)
           fresh += 1
         }
       }
@@ -465,7 +495,7 @@ class MatchSyncShard {
         break
       }
 
-      // 翻到最后一页说明已经走到底（LRU 里就是这么多），后续按增量处理
+      // 翻到最后一页说明已经走到底，后续按增量处理
       if (page + 1 === MAX_PAGES) {
         this._state.backfillDone = true
       }
@@ -550,60 +580,51 @@ class MatchSyncShard {
 }
 
 /**
- * 把 LCU 对局详情映射成后端约定的结构。
- * 兼容两种返回格式：老格式玩家信息在 participantIdentities 里，
- * 新格式直接内嵌在 participants 上。
+ * 把 SGP 对局摘要映射成后端约定的结构。
+ *
+ * SGP 的参与者是扁平结构：十个人各自带全套统计，没有 LCU 那种
+ * participants 与 participantIdentities 之间靠 participantId 关联的间接层。
  */
-function normalizeMatch(game) {
+function normalizeSgpMatch(game) {
   if (!game || !Array.isArray(game.participants)) {
     return null
-  }
-
-  const playerByParticipantId = new Map()
-
-  for (const identity of Array.isArray(game.participantIdentities)
-    ? game.participantIdentities
-    : []) {
-    playerByParticipantId.set(identity.participantId, identity.player || {})
   }
 
   const participants = []
 
   for (const participant of game.participants) {
-    const player = playerByParticipantId.get(participant.participantId) || participant
-    const puuid = player.puuid
+    const puuid = participant.puuid
 
     // puuid 是对局参与者的唯一标识，也是和车队成员关联的依据，缺失则丢弃该玩家
     if (!puuid) {
       continue
     }
 
-    const stats = participant.stats || {}
-
     participants.push({
       puuid,
-      gameName: player.gameName || '',
-      tagLine: player.tagLine || '',
+      gameName: participant.riotIdGameName || '',
+      tagLine: participant.riotIdTagline || '',
       teamId: toInt(participant.teamId),
-      // LCU 只给 lane（TOP/JUNGLE/MIDDLE/BOTTOM），没有细分到辅助位
-      position: (participant.timeline && participant.timeline.lane) || '',
+      // SGP 的 teamPosition 能区分出辅助（UTILITY），比 LCU 的 lane 更准；
+      // 特殊模式两个字段都可能为空，留空由前端兜底
+      position: participant.teamPosition || participant.individualPosition || '',
       championId: toInt(participant.championId),
-      win: stats.win === true,
-      kills: toInt(stats.kills),
-      deaths: toInt(stats.deaths),
-      assists: toInt(stats.assists),
-      totalDamageDealtToChampions: toInt(stats.totalDamageDealtToChampions),
-      totalMinionsKilled: toInt(stats.totalMinionsKilled),
-      goldEarned: toInt(stats.goldEarned),
-      visionScore: toInt(stats.visionScore),
+      win: participant.win === true,
+      kills: toInt(participant.kills),
+      deaths: toInt(participant.deaths),
+      assists: toInt(participant.assists),
+      totalDamageDealtToChampions: toInt(participant.totalDamageDealtToChampions),
+      totalMinionsKilled: toInt(participant.totalMinionsKilled),
+      goldEarned: toInt(participant.goldEarned),
+      visionScore: toInt(participant.visionScore),
       items: [
-        toInt(stats.item0),
-        toInt(stats.item1),
-        toInt(stats.item2),
-        toInt(stats.item3),
-        toInt(stats.item4),
-        toInt(stats.item5),
-        toInt(stats.item6)
+        toInt(participant.item0),
+        toInt(participant.item1),
+        toInt(participant.item2),
+        toInt(participant.item3),
+        toInt(participant.item4),
+        toInt(participant.item5),
+        toInt(participant.item6)
       ],
       summonerSpell1: toInt(participant.spell1Id),
       summonerSpell2: toInt(participant.spell2Id)
